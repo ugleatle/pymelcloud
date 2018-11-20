@@ -11,13 +11,6 @@ Thanks to o0Zz for creating the ha-melcloud component
 
 import requests, sys, os, logging, time
 
-#TODO: 
-# - Use keep alive to avoid too many reconnection
-#	s = requests.Session()
-#   s.get(), s.post() instead of requests.get
-#
-# - Move Post/Get methods in MelCloudAuthentication to centralize error 401
-
 _LOGGER = logging.getLogger(__name__)
 
 try:
