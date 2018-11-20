@@ -1,56 +1,12 @@
 #!/usr/local/bin/python3
 
 """
-	Author: o0Zz
+Support for Mitsubishi Melcloud.
 
-	ChangeLog:
-		Version 1.0: Initial release
-	
-	Documentation:
-		Reverse: http://mgeek.fr/blog/un-peu-de-reverse-engineering-sur-melcloud
-		HA climate example: https://github.com/home-assistant/home-assistant/blob/dev/homeassistant/components/climate/demo.py
-	
-	How to install:
-		Copy this file in <config_dir>/custom_components/climate/melcloud.py
-		Edit configuration.yaml and add below lines:
-		
-			climate:
-				-platform: melcloud
-				email: MY_EMAIL@gmail.com
-				password: MY_PASSWORD
+For more details about this platform, please refer to the documentation at
+https://home-assistant.io/components/melcloud/
 
-		Edit customization.yaml to provide a name to your climate devices.
-	
-	How to enable logs:
-	
-			logger:
-				default: critical
-				logs:
-					homeassistant.components.climate.melcloud: debug
-	
-	Workflow:
-		During startup the script will try to login on your account (Email/password)
-		If the login step fail, the setup will also fail and this components will be unload by HomeAssistant
-		Once login succeeded, we will download the list of all devices available on your melcloud account (This step is done everytime this component is loaded)
-		We don't cache any data to be as synchronized as possible, so, on every HomeAssistant startup we will re-download the list and get the most up to date device list.
-		Thus, If you want to add a new climate to your HomeAssistant, just restart it.
-		
-		Once we successfully login, we will retrive the "contextKey" and we will use this auth to all our requests
-		If an error 401 occured, it means contextKey has expired, in this case we will re-login
-		If any other error occured, we will abort.
-	
-	License:
-				DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE 
-						Version 2, December 2004
-		
-		Everyone is permitted to copy and distribute verbatim or modified
-		copies of this license document, and changing it is allowed as long
-		as the name is changed.
-				  
-				  DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
-		  TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
-		  
-		 0. You just DO WHAT THE FUCK YOU WANT TO.
+Thanks to o0Zz for creating the ha-melcloud component
 """
 
 import requests, sys, os, logging, time
