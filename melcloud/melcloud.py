@@ -1,554 +1,625 @@
-#!/usr/local/bin/python3
-
 """
-Support for Mitsubishi Melcloud.
-
+Support for MelCloud climates.
 For more details about this platform, please refer to the documentation at
-https://home-assistant.io/components/melcloud/
-
-Thanks to o0Zz for creating the ha-melcloud component
+https://home-assistant.io/components/climate.melcloud/
 """
 
-import requests, sys, os, logging, time
+
+import logging
+import time
+import requests
+
+from homeassistant.components.climate import (
+    SUPPORT_FAN_MODE, SUPPORT_ON_OFF, SUPPORT_OPERATION_MODE,
+    SUPPORT_SWING_MODE, SUPPORT_TARGET_TEMPERATURE, ClimateDevice)
+from homeassistant.const import ATTR_TEMPERATURE, TEMP_CELSIUS
 
 _LOGGER = logging.getLogger(__name__)
 
-try:
-	from homeassistant.components.climate import (ClimateDevice, SUPPORT_TARGET_TEMPERATURE, SUPPORT_FAN_MODE, SUPPORT_OPERATION_MODE, SUPPORT_ON_OFF, SUPPORT_SWING_MODE)
-	from homeassistant.const import TEMP_CELSIUS, TEMP_FAHRENHEIT, ATTR_TEMPERATURE
-	from homeassistant.helpers.discovery import load_platform
-except:
-		#Used for standalone runtime (Without HomeAssistant) - Mainly used for debugging purpose
-	logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-	class ClimateDevice:
-		pass
-	
 DOMAIN = 'melcloud'
-REQUIREMENTS = ['requests']
-DEPENDENCIES = []
 
-if sys.version_info[0] < 3:
-	raise Exception("Python 3 or a more recent version is required.")
-	
-# ---------------------------------------------------------------
+SUPPORT_FLAGS = (SUPPORT_TARGET_TEMPERATURE |
+                 SUPPORT_FAN_MODE |
+                 SUPPORT_OPERATION_MODE |
+                 SUPPORT_ON_OFF |
+                 SUPPORT_SWING_MODE)
+
+
+OPERATION_HEAT_STR = "Heat"
+OPERATION_COOL_STR = "Cool"
+OPERATION_FAN_STR = "Fan"
+OPERATION_AUTO_STR = "Auto"
+OPERATION_OFF_STR = "Off"
+OPERATION_DRY_STR = "Dry"
+
+MELCLOUD_API_URL = "https://app.melcloud.com/Mitsubishi.Wifi.Client"
+
 
 class Language:
-	English = 0
-	German = 4
-	Spanish = 6
-	French = 7
-	Italian = 19
-	
-# ---------------------------------------------------------------
+    """List of language available."""
+
+    English = 0
+    German = 4
+    Spanish = 6
+    French = 7
+    Italian = 19
+
 
 class Mode:
-	Heat = 1
-	Dry = 2
-	Cool = 3
-	Fan = 7
-	Auto = 8
+    """List of mode available."""
 
-# ---------------------------------------------------------------
+    Heat = 1
+    Dry = 2
+    Cool = 3
+    Fan = 7
+    Auto = 8
+
 
 class MelCloudAuthentication:
-	def __init__(self, email, password, language = Language.English):
-		self._email = email
-		self._password = password
-		self._language = language
-		self._contextkey = None
+    """Authentication on MelCloud."""
 
-	def isLogin(self):
-		return self._contextkey != None
-		
-	def login(self):
-		_LOGGER.debug("Login ...")
+    def __init__(self, email, password, language=Language.English,
+                 lease_time=60):
+        """Initialize the Authentication component."""
+        self._email = email
+        self._password = password
+        self._language = language
+        self._lease_time = lease_time
+        self._contextkey = None
 
-		self._contextkey = None
-		
-		req = requests.post("https://app.melcloud.com/Mitsubishi.Wifi.Client/Login/ClientLogin", data={"Email": self._email ,"Password": self._password, "Language": self._language, "AppVersion": "1.15.3.0", "Persist": False})
-		
-		if req.status_code == 200:
-			reply = req.json()
-			if "ErrorId" in reply and reply["ErrorId"] == None:
-				self._contextkey = reply["LoginData"]["ContextKey"]
-				return True
-			else:
-				_LOGGER.error("Login/Password invalid ! ")
+    def is_login(self):
+        """Return if MelCloud is logged."""
+        if self._contextkey:
+            return True
+        return False
 
-		else:
-			_LOGGER.error("Login status code invalid: " + str(req.status_code))
+    def login(self):
+        """Login on MelCloud."""
+        _LOGGER.debug("Login ...")
 
-		return False
-		
-	def getContextKey(self):
-		return self._contextkey
-	
-# ---------------------------------------------------------------
+        self._contextkey = None
+
+        req = requests.post(
+            MELCLOUD_API_URL + "/Login/ClientLogin",
+            data={
+                "Email": self._email,
+                "Password": self._password,
+                "Language": self._language,
+                "AppVersion": "1.15.3.0",
+                "Persist": False
+            })
+
+        if req.status_code == 200:
+            reply = req.json()
+            if "ErrorId" in reply and not reply["ErrorId"]:
+                self._contextkey = reply["LoginData"]["ContextKey"]
+                return True
+
+            _LOGGER.error("Login/Password invalid ! ")
+            return False
+
+        _LOGGER.error("Login status code invalid: %d", req.status_code)
+        return False
+
+    def get_context_key(self):
+        """Return the context key."""
+        return self._contextkey
+
+    def get_lease_time(self):
+        """Return lease time."""
+        return self._lease_time
+
 
 class MelCloudDevice:
+    """Representation of a Mitsubishi Device as returned by MelCloud."""
 
-	def __init__(self, deviceid, buildingid, friendlyname, authentication):
-		self._deviceid = deviceid
-		self._buildingid = buildingid
-		self._friendlyname = friendlyname
-		self._authentication = authentication
-		self._info_lease_seconds = 60 #Data stay valid during 60s, after that we refresh it
-		self._json = None
-		self._temp_list = []
-		self._temp_iteration = 0
-		
-		self._refresh_device_info()
-			
-	def __str__(self):
-		return str(self._json)
-		#return "Name: " + self._friendlyname + " ID: " + str(self._deviceid) + " BuildingID: " + str(self._buildingid)
-		#return "Temp: " + str(self.getTemperature()) + ", RoomTemp: " + str(self.getRoomTemperature()) + ", FanSpeed: " + str(self.getFanSpeed()) + ", Mode: " + str(self.getMode()) + ", PowerOn: " + str(self.isPowerOn()) + ", Online: " + str(self.isOnline())
+    def __init__(self, deviceid, buildingid, friendlyname, authentication):
+        """Initialize the MelCloud Device."""
+        self._deviceid = deviceid
+        self._buildingid = buildingid
+        self._friendlyname = friendlyname
+        self._authentication = authentication
+        self._json = None
+        self._refresh_device_info()
 
-	def _refresh_device_info(self, recursive = 0):
-		self._json = None
-		self._last_info_time_s = time.time()
-		
-		if recursive > 1:
-			return False
-		
-		req = requests.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/Get", headers = {'X-MitsContextKey': self._authentication.getContextKey()}, data = {'id': self._deviceid, 'buildingID': self._buildingid})
-		
-		if req.status_code == 200:
-			self._json = req.json()
-			
-			#Update the temp list
-			if len(self._temp_list) >= 9:
-				
-				if self._temp_iteration == 9:
-					self._temp_iteration = 0
-				
-				self._temp_list[self._temp_iteration] = self._json["RoomTemperature"]
-				self._temp_iteration += 1
-			else:
-				self._temp_list.append(self._json["RoomTemperature"])
-				self._temp_iteration += 1
-			
-			
-			return True
-		elif req.status_code == 401:
-			_LOGGER.error("Device information error 401 (Try to re-login...)")
-			if self._authentication.login():
-				return self._retrieve_device_info(recursive + 1)
-		else:
-			_LOGGER.error("Unable to retrieve device information (Invalid status code: " + str(req.status_code) + ")")
+    def __str__(self):
+        """Return MelCloudDevice JSON."""
+        return str(self._json)
 
-		return False
-		
-	def _is_info_valid(self):
-		if self._json == None:
-			return self._refresh_device_info()
-		
-		if (time.time() - self._last_info_time_s) >= self._info_lease_seconds:
-			_LOGGER.info("Device info lease timeout, refreshing...")
-			return self._refresh_device_info()
-			
-		return True
-		
-	def apply(self, recursive = 0):
-		if self._json == None:
-			_LOGGER.error("Unable to apply device configuration !")
-			return False
+    def _refresh_device_info(self, recursive=0):
+        """Refresh the MelCloud Device informations."""
+        self._json = None
+        self._last_info_time = time.time()
 
-		if recursive > 1:
-			return False
+        if recursive > 1:
+            return False
 
-		#EffectiveFlags:
-		#Power: 		 0x01
-		#OperationMode:  0x02
-		#Temperature: 	 0x04
-		#FanSpeed: 		 0x08
-		#VaneVertical:   0x10
-		#VaneHorizontal: 0x100
-		#Signal melcloud we want to change everything (Even if it't not true, by this way we make sure the configuration is complete)
-		self._json["EffectiveFlags"] = 0x1F
-		self._json["HasPendingCommand"] = True
-		
-		req = requests.post("https://app.melcloud.com/Mitsubishi.Wifi.Client/Device/SetAta", headers = {'X-MitsContextKey': self._authentication.getContextKey()}, data = self._json)
-		if req.status_code == 200:
-			_LOGGER.info("Device configuration successfully applied")
-			return True
-		elif req.status_code == 401:
-			_LOGGER.error("Apply device configuration error 401 (Try to re-login...)")
-			if self._authentication.login():
-				return self.apply(recursive + 1)
-		else:
-			_LOGGER.error("Unable to apply device configuration (Invalid status code: " + str(req.status_code) + ")")
-			
-		return False
-	
-	def getID(self):
-		return self._deviceid
-		
-	def getFriendlyName(self):
-		return self._friendlyname
-		
-	def getTemperature(self):
-		if not self._is_info_valid():
-			return 0
-				
-		return self._json["SetTemperature"]
+        req = requests.get(
+            MELCLOUD_API_URL + "/Device/Get",
+            headers={
+                'X-MitsContextKey': self._authentication.get_context_key()
+            },
+            data={
+                'id': self._deviceid,
+                'buildingID': self._buildingid
+            })
 
-	def getRoomTemperature(self):
-		if not self._is_info_valid():
-			return 0
-					
-		#return self._json["RoomTemperature"]
-		
-		# return temp average with 1 decimal
-		return round((sum(self._temp_list) / len(self._temp_list)),1)
-	
-	def getFanSpeedMax(self):
-		if not self._is_info_valid():
-			return 0
-				
-		return self._json["NumberOfFanSpeeds"]
-	
-	def getFanSpeed(self): #0 Auto, 1 to NumberOfFanSpeeds
-		if not self._is_info_valid():
-			return 0
-				
-		return self._json["SetFanSpeed"]
-	
-	def getVerticalSwingMode(self): #0 Auto, 1 to NumberOfVane, +1 Swing
-		if not self._is_info_valid():
-			return 0
-				
-		return self._json["VaneVertical"]
-		
-	def getHorizontalSwingMode(self): #0 Auto, 1 to NumberOfVane, +1 Swing
-		if not self._is_info_valid():
-			return 0
-				
-		return self._json["VaneHorizontal"]
-		
-	def getMode(self):
-		if not self._is_info_valid():
-			return Mode.Auto
-			
-		return self._json["OperationMode"] #Return class Mode
-	
-	def isPowerOn(self): #boolean
-		if not self._is_info_valid():
-			return False
-			
-		return self._json["Power"]
+        if req.status_code == 200:
+            self._json = req.json()
+            return True
 
-	def isOnline(self): #boolean
-		if not self._is_info_valid():
-			return False
-			
-		return not self._json["Offline"]	
+        if req.status_code == 401:
+            _LOGGER.error("Device information error 401 (Try to re-login...)")
+            if self._authentication.login():
+                return self._refresh_device_info(recursive + 1)
 
-	def setVerticalSwingMode(self, swingMode):
-		if not self._is_info_valid():
-			_LOGGER.error("Unable to set swing mode: " + str(swingMode))
-			return False
-			
-		self._json["VaneVertical"] = swingMode
-		return True
+            return False
 
-	def setHorizontalSwingMode(self, swingMode):
-		if not self._is_info_valid():
-			_LOGGER.error("Unable to set swing mode: " + str(swingMode))
-			return False
-			
-		self._json["VaneHorizontal"] = swingMode
-		return True
+        _LOGGER.error("Unable to retrieve device information \
+                      (Invalid status code: %d)", req.status_code)
 
-		
-	def setTemperature(self, temperature):
-		if not self._is_info_valid():
-			_LOGGER.error("Unable to set temperature: " + str(temperature))
-			return False
-			
-		self._json["SetTemperature"] = temperature
-		return True
+        return False
 
-	def setFanSpeed(self, speed): #0 Auto, 1 to NumberOfFanSpeeds
-		if not self._is_info_valid():
-			_LOGGER.error("Unable to set fan speed: " + str(speed))
-			return False
-			
-		self._json["SetFanSpeed"] = speed
-		return True
-		
-	def setMode(self, mode):
-		if not self._is_info_valid():
-			_LOGGER.error("Unable to set mode: " + str(mode))
-			return
-			
-		self._json["OperationMode"] = mode
-	
-	def powerOn(self):
-		if not self._is_info_valid():
-			_LOGGER.error("Unable to powerOn")
-			return False
-			
-		self._json["Power"] = True
-		return True
-		
-	def powerOff(self):
-		if not self._is_info_valid():
-			_LOGGER.error("Unable to powerOff")
-			return False
-			
-		self._json["Power"] = False
-		return True
+    def _is_info_valid(self):
+        """Check if information are valid."""
+        if not self._json:
+            return self._refresh_device_info()
 
-# ---------------------------------------------------------------
+        if (time.time() - self._last_info_time) >= self._authentication.\
+                get_lease_time():
+            _LOGGER.info("Device info lease timeout, refreshing...")
+            return self._refresh_device_info()
+
+        return True
+
+    def apply(self, recursive=0):
+        """Apply changes."""
+        if not self._json:
+            _LOGGER.error("Unable to apply device configuration !")
+            return False
+
+        if recursive > 1:
+            return False
+
+        # EffectiveFlags:
+        # Power:          0x01
+        # OperationMode:  0x02
+        # Temperature:    0x04
+        # FanSpeed:       0x08
+        # VaneVertical:   0x10
+        # VaneHorizontal: 0x100
+        # Signal melcloud we want to change everything (Even if it's not true,
+        # by this way we make sure the configuration is complete)
+        self._json["EffectiveFlags"] = 0x1F
+        self._json["HasPendingCommand"] = True
+
+        req = requests.post(
+            MELCLOUD_API_URL + "/Device/SetAta",
+            headers={
+                'X-MitsContextKey': self._authentication.get_context_key()
+            },
+            data=self._json)
+
+        if req.status_code == 200:
+            _LOGGER.info("Device configuration successfully applied")
+            return True
+
+        if req.status_code == 401:
+            _LOGGER.error("Apply device configuration error 401 (Re-login...)")
+            if self._authentication.login():
+                return self.apply(recursive + 1)
+
+            return False
+
+        _LOGGER.error("Unable to apply device configuration (Invalid \
+                        status code: %d)", req.status_code)
+
+        return False
+
+    def get_id(self):
+        """Get Device ID."""
+        return self._deviceid
+
+    def get_friendly_name(self):
+        """Get Device Friendly name."""
+        return self._friendlyname
+
+    def get_temperature(self):
+        """Get Device Temperature."""
+        if not self._is_info_valid():
+            return 0
+
+        return self._json["SetTemperature"]
+
+    def get_room_temperature(self):
+        """Get Room Temperature."""
+        if not self._is_info_valid():
+            return 0
+
+        return self._json["RoomTemperature"]
+
+    def get_fan_speed_max(self):
+        """Get Maximum fan speed."""
+        if not self._is_info_valid():
+            return 0
+
+        return self._json["NumberOfFanSpeeds"]
+
+    def get_fan_speed(self):
+        """Get the current fan speed: 0 Auto, 1 to NumberOfFanSpeeds."""
+        if not self._is_info_valid():
+            return 0
+
+        return self._json["SetFanSpeed"]
+
+    def get_vertical_swing_mode(self):
+        """Get vertical swing mode: 0 Auto, 1 to 5, 7 Swing."""
+        if not self._is_info_valid():
+            return 0
+
+        return self._json["VaneVertical"]
+
+    def get_horizontal_swing_mode(self):
+        """Get horizontal swing mode: 0 Auto, 1 to 5, 7 Swing."""
+        if not self._is_info_valid():
+            return 0
+
+        return self._json["VaneHorizontal"]
+
+    def get_mode(self):
+        """Get Mode."""
+        if not self._is_info_valid():
+            return Mode.Auto
+
+        return self._json["OperationMode"]
+
+    def is_power_on(self):
+        """Return if device is powerOn."""
+        if not self._is_info_valid():
+            return False
+
+        return self._json["Power"]
+
+    def is_online(self):
+        """Return if device is Online."""
+        if not self._is_info_valid():
+            return False
+
+        return not self._json["Offline"]
+
+    def set_vertical_swing_mode(self, swing_mode):
+        """Set vertical swing Mode."""
+        if not self._is_info_valid():
+            _LOGGER.error("Unable to set swing mode: %d", swing_mode)
+            return False
+
+        self._json["VaneVertical"] = swing_mode
+        return True
+
+    def set_horizontal_swing_mode(self, swing_mode):
+        """Set horizontal swing Mode."""
+        if not self._is_info_valid():
+            _LOGGER.error("Unable to set swing mode: %d", swing_mode)
+            return False
+
+        self._json["VaneHorizontal"] = swing_mode
+        return True
+
+    def set_temperature(self, temperature):
+        """Set Temperature."""
+        if not self._is_info_valid():
+            _LOGGER.error("Unable to set temperature: %f", temperature)
+            return False
+
+        self._json["SetTemperature"] = temperature
+        return True
+
+    # 0 Auto, 1 to NumberOfFanSpeeds
+    def set_fan_speed(self, speed):
+        """Set FanSpeed."""
+        if not self._is_info_valid():
+            _LOGGER.error("Unable to set fan speed: %d", speed)
+            return False
+
+        self._json["SetFanSpeed"] = speed
+        return True
+
+    def set_mode(self, mode):
+        """Set Mode."""
+        if not self._is_info_valid():
+            _LOGGER.error("Unable to set mode: %d", mode)
+            return
+
+        self._json["OperationMode"] = mode
+
+    def power_on(self):
+        """Power On Device."""
+        if not self._is_info_valid():
+            _LOGGER.error("Unable to powerOn")
+            return False
+
+        self._json["Power"] = True
+        return True
+
+    def power_off(self):
+        """Power Off Device."""
+        if not self._is_info_valid():
+            _LOGGER.error("Unable to powerOff")
+            return False
+
+        self._json["Power"] = False
+        return True
+
 
 class MelCloud:
-	def __init__(self, authentication):
-		self._authentication = authentication
-		
-	def getDevicesList(self, recursive = 0):
-		devices = []
-		
-		if recursive > 1:
-			return devices
+    """Representation of a MelCloud website interface."""
 
-		req = requests.get("https://app.melcloud.com/Mitsubishi.Wifi.Client/User/ListDevices", headers = {'X-MitsContextKey': self._authentication.getContextKey()})
-		if req.status_code == 200:
-			reply = req.json()
-			
-			_LOGGER.debug(reply)
-			for entry in reply:
-			
-				#Flat devices
-				for device in entry["Structure"]["Devices"]:
-					devices.append( MelCloudDevice(device["DeviceID"], device["BuildingID"], device["DeviceName"], self._authentication) )
-				
-				#Areas devices
-				for areas in entry["Structure"]["Areas"]:
-					for device in areas["Devices"]:
-						devices.append( MelCloudDevice(device["DeviceID"], device["BuildingID"], device["DeviceName"], self._authentication) )
-				
-				#Floor devices
-				for floor in entry["Structure"]["Floors"]:
-					for device in floor["Devices"]:
-						devices.append( MelCloudDevice(device["DeviceID"], device["BuildingID"], device["DeviceName"], self._authentication) )
-					
-					for areas in floor["Areas"]:
-						for device in areas["Devices"]:
-							devices.append( MelCloudDevice(device["DeviceID"], device["BuildingID"], device["DeviceName"], self._authentication) )
-					
-		elif req.status_code == 401:
-			_LOGGER.error("Get device list error 401 (Try to re-login...)")
-			if self._authentication.login():
-				return self.getDevicesList(recursive + 1)
-		else:
-			_LOGGER.error("Unable to retrieve device list (Status code invalid: " + str(req.status_code) + ")")
+    def __init__(self, authentication):
+        """Initialize the MelCloud website."""
+        self._authentication = authentication
 
-		return devices
+    def get_devices_list(self, recursive=0):
+        """Retrieve the list of devices from MelCloud website."""
+        devices = []
 
-# ---------------------------------------------------------------
+        if recursive > 1:
+            return devices
 
-OPERATION_HEAT_STR = 'Heat'
-OPERATION_COOL_STR = 'Cool'
-OPERATION_FAN_STR = 'Fan'
-OPERATION_AUTO_STR = 'Auto'
-OPERATION_OFF_STR = 'Off'
-OPERATION_DRY_STR = 'Dry'
+        req = requests.get(
+            MELCLOUD_API_URL + "/User/ListDevices",
+            headers={
+                'X-MitsContextKey': self._authentication.get_context_key()
+            })
+
+        if req.status_code == 200:
+            reply = req.json()
+
+            # _LOGGER.debug(reply)
+            for entry in reply:
+
+                # Flat devices
+                for device in entry["Structure"]["Devices"]:
+                    devices.append(MelCloudDevice(device["DeviceID"],
+                                                  device["BuildingID"],
+                                                  device["DeviceName"],
+                                                  self._authentication))
+
+                # Areas devices
+                for areas in entry["Structure"]["Areas"]:
+                    for device in areas["Devices"]:
+                        devices.append(MelCloudDevice(device["DeviceID"],
+                                                      device["BuildingID"],
+                                                      device["DeviceName"],
+                                                      self._authentication))
+
+                # Floor devices
+                for floor in entry["Structure"]["Floors"]:
+                    for device in floor["Devices"]:
+                        devices.append(MelCloudDevice(device["DeviceID"],
+                                                      device["BuildingID"],
+                                                      device["DeviceName"],
+                                                      self._authentication))
+
+                    for areas in floor["Areas"]:
+                        for device in areas["Devices"]:
+                            devices.append(MelCloudDevice(device["DeviceID"],
+                                                          device["BuildingID"],
+                                                          device["DeviceName"],
+                                                          self._authentication)
+                                           )
+            return devices
+
+        if req.status_code == 401:
+            _LOGGER.error("Get device list error 401 (Re-login...)")
+            if self._authentication.login():
+                return self.get_devices_list(recursive + 1)
+
+            return devices
+
+        _LOGGER.error("Unable to retrieve device list (Status code: %d)",
+                      req.status_code)
+
+        return devices
+
 
 class MelCloudClimate(ClimateDevice):
+    """Representation of a MelCloud HVAC."""
 
-	def __init__(self, device):
-		self._device = device
-		
-		self._fan_list = ['Speed Auto', 'Speed 1 (Min)']
-		for i in range(2, self._device.getFanSpeedMax()):
-			self._fan_list.append('Speed ' + str(i))
-		self._fan_list.append('Speed ' + str(self._device.getFanSpeedMax()) + " (Max)")
-		
-		self._swing_list = ['Auto', '1', '2', '3', '4', '5', 'Swing']
-		self._swing_id = [0, 1, 2, 3, 4, 5, 7]
-		
-	@property
-	def supported_features(self):
-		return (SUPPORT_TARGET_TEMPERATURE | SUPPORT_FAN_MODE | SUPPORT_OPERATION_MODE | SUPPORT_ON_OFF | SUPPORT_SWING_MODE)
+    def __init__(self, device):
+        """Initialize the climate device."""
+        self._device = device
 
-	@property
-	def should_poll(self):
-		return True
+        self._fan_list = ["Speed Auto", "Speed 1 (Min)"]
+        for i in range(2, self._device.get_fan_speed_max()):
+            self._fan_list.append("Speed " + str(i))
+        self._fan_list.append("Speed {} (Max)".
+                              format(self._device.get_fan_speed_max()))
 
-	@property
-	def name(self):
-		return "MELCloud " + self._device.getFriendlyName() + " (" + str(self._device.getID()) + ")"
+        self._swing_list = ["Auto", "1", "2", "3", "4", "5", "Swing"]
+        self._swing_id = [0, 1, 2, 3, 4, 5, 7]
 
-	@property
-	def temperature_unit(self):
-		return TEMP_CELSIUS
+    @property
+    def supported_features(self):
+        """Return the list of supported features."""
+        return (SUPPORT_TARGET_TEMPERATURE | SUPPORT_FAN_MODE |
+                SUPPORT_OPERATION_MODE | SUPPORT_ON_OFF | SUPPORT_SWING_MODE)
 
-	@property
-	def current_temperature(self):
-		return self._device.getRoomTemperature()
+    @property
+    def should_poll(self):
+        """Request homeassistant to poll this device to refresh state."""
+        return True
 
-	@property
-	def target_temperature(self):
-		return self._device.getTemperature()
+    @property
+    def name(self):
+        """Return the name of the thermostat."""
+        return "MELCloud " + self._device.get_friendly_name() \
+            + " (" + str(self._device.get_id()) + ")"
 
-	@property
-	def current_operation(self):
-		if not self._device.isPowerOn():
-			return OPERATION_OFF_STR
-		elif self._device.getMode() == Mode.Heat:
-			return OPERATION_HEAT_STR
-		elif self._device.getMode() == Mode.Cool:
-			return OPERATION_COOL_STR
-		elif self._device.getMode() == Mode.Dry:
-			return OPERATION_DRY_STR
-		elif self._device.getMode() == Mode.Fan:
-			return OPERATION_FAN_STR
-		elif self._device.getMode() == Mode.Auto:
-			return OPERATION_AUTO_STR
-		
-		return "" #Unknown
+    @property
+    def temperature_unit(self):
+        """Return the unit of measurement which this thermostat uses."""
+        return TEMP_CELSIUS
 
-	@property
-	def operation_list(self):
-		return [OPERATION_HEAT_STR, OPERATION_COOL_STR, OPERATION_DRY_STR, OPERATION_FAN_STR, OPERATION_AUTO_STR, OPERATION_OFF_STR]
+    @property
+    def current_temperature(self):
+        """Return the current temperature."""
+        return self._device.get_room_temperature()
 
-	@property
-	def is_on(self):
-		return self._device.isPowerOn()
+    @property
+    def target_temperature(self):
+        """Return the temperature we try to reach."""
+        return self._device.get_temperature()
 
-	@property
-	def current_fan_mode(self):
-		if self._device.getFanSpeed() >= len(self._fan_list):
-			return self._fan_list[0]
-			
-		return self._fan_list[self._device.getFanSpeed()]
-		
-	@property
-	def fan_list(self):
-		return self._fan_list
+    def set_temperature(self, **kwargs):
+        """Set temperature."""
+        if kwargs.get(ATTR_TEMPERATURE) is not None:
+            self._device.set_temperature(kwargs.get(ATTR_TEMPERATURE))
+            self._device.apply()
 
-	@property
-	def current_swing_mode(self):
-		for i in range(0, len(self._swing_id)):
-			if self._device.getVerticalSwingMode() == self._swing_id[i]:
-				return self._swing_list[i]
-				
-		return self._swing_list[0] #Auto
+        self.schedule_update_ha_state()
 
-	def set_swing_mode(self, swing_mode):
-		for i in range(0, len(self._swing_list)):
-			if swing_mode == self._swing_list[i]:
-				self._device.setVerticalSwingMode(self._swing_id[i])
-				self._device.apply()
-				break
-				
-		self.schedule_update_ha_state()
+    @property
+    def swing_list(self):
+        """List of available swing modes."""
+        return self._swing_list
 
-	@property
-	def swing_list(self):
-		return self._swing_list
-		
-	def set_temperature(self, **kwargs):
-		if kwargs.get(ATTR_TEMPERATURE) is not None:
-			self._device.setTemperature(kwargs.get(ATTR_TEMPERATURE))
-			self._device.apply()
-			
-		self.schedule_update_ha_state()
+    @property
+    def current_swing_mode(self):
+        """Return the swing setting."""
+        for i in range(0, len(self._swing_id)):
+            if self._device.get_vertical_swing_mode() == self._swing_id[i]:
+                return self._swing_list[i]
 
-	def set_fan_mode(self, fan_mode):
-		for i in range(0, len(self._fan_list)):
-			if fan_mode == self._fan_list[i]:
-				self._device.setFanSpeed(i)
-				self._device.apply()
-				break
-				
-		self.schedule_update_ha_state()
+        return self._swing_list[0]
 
-	def set_operation_mode(self, operation_mode):
-		if operation_mode == OPERATION_OFF_STR:
-			self._device.powerOff()
-		else:
-			self._device.powerOn()
-			if operation_mode == OPERATION_HEAT_STR:
-				self._device.setMode(Mode.Heat)
-			elif operation_mode == OPERATION_COOL_STR:
-				self._device.setMode(Mode.Cool)
-			elif operation_mode == OPERATION_DRY_STR:
-				self._device.setMode(Mode.Dry)
-			elif operation_mode == OPERATION_FAN_STR:
-				self._device.setMode(Mode.Fan)
-			elif operation_mode == OPERATION_AUTO_STR:
-				self._device.setMode(Mode.Auto)
+    def set_swing_mode(self, swing_mode):
+        """Set new swing mode."""
+        for i in range(0, len(self._swing_list)):
+            if swing_mode == self._swing_list[i]:
+                self._device.set_vertical_swing_mode(self._swing_id[i])
+                self._device.apply()
+                break
 
-		self._device.apply()
-		self.schedule_update_ha_state()
+        self.schedule_update_ha_state()
 
-	def turn_on(self):
-		self._device.powerOn()
-		self._device.apply()
-		self.schedule_update_ha_state()
+    @property
+    def fan_list(self):
+        """List of available fan modes."""
+        return self._fan_list
 
-	def turn_off(self):
-		self._device.powerOff()
-		self._device.apply()
-		self.schedule_update_ha_state()
-		
-# ---------------------------------------------------------------
+    @property
+    def current_fan_mode(self):
+        """Return the fan setting."""
+        if self._device.get_fan_speed() >= len(self._fan_list):
+            return self._fan_list[0]
+
+        return self._fan_list[self._device.get_fan_speed()]
+
+    def set_fan_mode(self, fan_mode):
+        """Set fan mode."""
+        for i in range(0, len(self._fan_list)):
+            if fan_mode == self._fan_list[i]:
+                self._device.set_fan_speed(i)
+                self._device.apply()
+                break
+
+        self.schedule_update_ha_state()
+
+    @property
+    def operation_list(self):
+        """Return the list of available operation modes."""
+        return [OPERATION_HEAT_STR, OPERATION_COOL_STR, OPERATION_DRY_STR,
+                OPERATION_FAN_STR, OPERATION_AUTO_STR, OPERATION_OFF_STR]
+
+    @property
+    def current_operation(self):
+        """Return current operation ie. heat, cool ..."""
+        if not self._device.is_power_on():
+            return OPERATION_OFF_STR
+        if self._device.get_mode() == Mode.Heat:
+            return OPERATION_HEAT_STR
+        if self._device.get_mode() == Mode.Cool:
+            return OPERATION_COOL_STR
+        if self._device.get_mode() == Mode.Dry:
+            return OPERATION_DRY_STR
+        if self._device.get_mode() == Mode.Fan:
+            return OPERATION_FAN_STR
+        if self._device.get_mode() == Mode.Auto:
+            return OPERATION_AUTO_STR
+
+        # Unknown
+        return ""
+
+    def set_operation_mode(self, operation_mode):
+        """Set HVAC mode."""
+        if operation_mode == OPERATION_OFF_STR:
+            self._device.power_off()
+        else:
+            self._device.power_on()
+            if operation_mode == OPERATION_HEAT_STR:
+                self._device.set_mode(Mode.Heat)
+            elif operation_mode == OPERATION_COOL_STR:
+                self._device.set_mode(Mode.Cool)
+            elif operation_mode == OPERATION_DRY_STR:
+                self._device.set_mode(Mode.Dry)
+            elif operation_mode == OPERATION_FAN_STR:
+                self._device.set_mode(Mode.Fan)
+            elif operation_mode == OPERATION_AUTO_STR:
+                self._device.set_mode(Mode.Auto)
+
+        self._device.apply()
+        self.schedule_update_ha_state()
+
+    @property
+    def is_on(self):
+        """Return is device is power on."""
+        return self._device.is_power_on()
+
+    def turn_on(self):
+        """Turn on device."""
+        self._device.power_on()
+        self._device.apply()
+        self.schedule_update_ha_state()
+
+    def turn_off(self):
+        """Turn off device."""
+        self._device.power_off()
+        self._device.apply()
+        self.schedule_update_ha_state()
+
 
 def setup_platform(hass, config, add_devices, discovery_info=None):
-	_LOGGER.debug("Adding component: melcloud ...")
-	
-	email = config.get("email")
-	password = config.get("password")
-	language = config.get("language", Language.English)
+    """Set up the MelCloud HVAC platform."""
+    _LOGGER.debug("Adding component: melcloud ...")
 
-	if email is None:
-		_LOGGER.error("melcloud: Invalid email !")
-		return False
-		
-	if password is None:
-		_LOGGER.error("melcloud: Invalid password !")
-		return False
+    email = config.get("email")
+    password = config.get("password")
+    language = config.get("language", Language.English)
+    lease_time = config.get("lease_time", 60)
 
-	mcauth = MelCloudAuthentication(email, password, language)
-	if mcauth.login() == False:
-		_LOGGER.error("melcloud: Invalid Login/Password  !")
-		return False
-		
-	mc = MelCloud(mcauth)
-	
-	device_list = []
-	
-	devices = mc.getDevicesList()
-	for device in devices:
-		_LOGGER.debug("melcloud: Adding new device: " + device.getFriendlyName())
-		device_list.append( MelCloudClimate(device) )
-	
-	add_devices(device_list)
-	
-	_LOGGER.debug("melcloud: Component successfully added !")
-	return True
+    if email is None:
+        _LOGGER.error("Invalid email !")
+        return False
 
-# ---------------------------------------------------------------
+    if password is None:
+        _LOGGER.error("Invalid password !")
+        return False
 
-if __name__ == '__main__':
+    mcauth = MelCloudAuthentication(email, password, language, lease_time)
+    if not mcauth.login():
+        _LOGGER.error("Invalid Login/Password  !")
+        return False
 
-	if len(sys.argv) < 3:
-		print ("Usage: " + sys.argv[0] + " <email> <password>")
-		sys.exit(1)
+    mel_cloud = MelCloud(mcauth)
 
-	mcauth = MelCloudAuthentication(sys.argv[1], sys.argv[2])
-	if mcauth.login() == False:
-		print("Invalid Login/Password  !")
-		sys.exit(1)
-	
-	#mcauth._contextkey = "000000000000000"
-	mc = MelCloud(mcauth)
-	
-	devices = mc.getDevicesList()
-	for device in  devices:
-		print (device)
-		#device.powerOff()
-		#device.apply() 
+    device_list = []
 
+    devices = mel_cloud.get_devices_list()
+    for device in devices:
+        _LOGGER.debug("Adding new device: %s", device.get_friendly_name())
+        device_list.append(MelCloudClimate(device))
+
+    add_devices(device_list)
+
+    _LOGGER.debug("Component successfully added !")
+    return True
