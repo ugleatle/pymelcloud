@@ -1,4 +1,4 @@
-# MelCloud
+# MELCloud
 
 Home Assistant support for Mitsubishi air conditioner/heatpump (MELCloud)
 
