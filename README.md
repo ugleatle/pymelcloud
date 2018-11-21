@@ -2,6 +2,9 @@
 
 Home assistant support for mitsubishi air conditioner/heatpump (MELCloud)
 
+For more details about this platform, please refer to the documentation at
+https://home-assistant.io/components/climate.melcloud/
+
 ## Installing
 
 Edit configuration.yaml and add below lines:
