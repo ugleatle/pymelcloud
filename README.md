@@ -7,13 +7,15 @@ https://home-assistant.io/components/climate.melcloud/
 
 ## Installing
 
-Edit configuration.yaml and add below lines:
+To enable the platform, add the following lines to your configuration.yaml file
 	
 	climate:
 	  -platform: melcloud
 	   email: MY_EMAIL@gmail.com
 	   password: MY_PASSWORD
 
+
+Logging options
 
 	logger:
 	  default: debug
