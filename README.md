@@ -1,6 +1,6 @@
-# HomeAssistant - MelCloud
+# MelCloud
 
-Add to home assistant support for mitsubishi air conditioner (MELCloud)
+Home assistant support for mitsubishi air conditioner/heatpump (MELCloud)
 
 ## Installing
 
