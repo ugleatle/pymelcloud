@@ -15,6 +15,5 @@ Edit configuration.yaml and add below lines:
 		email: MY_EMAIL@gmail.com
 		password: MY_PASSWORD
 
-## License
 
-This project is licensed under the WTF License
+The library is used as part of Home Assistant
