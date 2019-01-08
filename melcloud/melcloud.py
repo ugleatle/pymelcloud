@@ -435,7 +435,7 @@ class MelCloudClimate(ClimateDevice):
         self._fan_list.append("Speed {} (Max)".
                               format(self._device.get_fan_speed_max()))
 
-        self._swing_list = ["Auto", "1", "2", "3", "4", "5", "Swing"]
+        self._swing_list = ['Auto', 'Top', 'MiddleTop', 'Middle', 'MiddleBottom', 'Bottom', 'Swing']
         self._swing_id = [0, 1, 2, 3, 4, 5, 7]
 
     @property
