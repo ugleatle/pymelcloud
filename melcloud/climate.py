@@ -1,5 +1,5 @@
 """
-Support for MelCloud climates.
+Support for MelCloud climate.
 For more details about this platform, please refer to the documentation at
 
 """
