@@ -1,5 +1,5 @@
 """
-Support for MelCloud climate.
+Support for MelCloud climates.
 For more details about this platform, please refer to the documentation at
 
 """
@@ -9,10 +9,11 @@ import requests, sys, os, logging, time
 _LOGGER = logging.getLogger(__name__)
 
 try:
-	from homeassistant.components.climate import ClimateDevice, PLATFORM_SCHEMA
 	from homeassistant.components.climate.const import (SUPPORT_TARGET_TEMPERATURE, SUPPORT_FAN_MODE, SUPPORT_OPERATION_MODE, SUPPORT_ON_OFF, SUPPORT_SWING_MODE)
+	from homeassistant.components.climate import ClimateDevice
 	from homeassistant.const import TEMP_CELSIUS, TEMP_FAHRENHEIT, ATTR_TEMPERATURE
 	from homeassistant.helpers.discovery import load_platform
+
 except:
 #Used for standalone runtime (Without HomeAssistant) - Mainly used for debugging purpose
 	logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
