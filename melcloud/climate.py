@@ -1,6 +1,6 @@
 """
-Support for MelCloud climates.
-For more details about this platform, please refer to the documentation at
+Support for MelCloud climate.
+For more details about this platform, please refer to the documentation at ....
 
 """
 
