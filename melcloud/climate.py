@@ -1,7 +1,6 @@
 """
 Support for MelCloud climate.
-For more details about this platform, please refer to the documentation at ....
-
+For more details about this platform, please refer to the documentation at "Will be added later"
 """
 
 import requests, sys, os, logging, time
